@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Light side-by-side review strip: baseline vs candidate, time-locked.
+"""Light 3-up review strip: delivered | post-process | hand21kp, side by side, time-locked.
 
-Built for triage across hundreds of clips, so it deliberately drops any 3D panels --
-those cost minutes per clip and the visible problem is the skeleton on the ego view.
+Built for triage across hundreds of clips, so it deliberately drops the 3D matplotlib panels --
+those cost minutes per clip and the customer's complaint is about the skeleton on the ego view.
 One decode pass, cv2 drawing only, downscaled, ~25 MB per 60 s clip.
 """
 from __future__ import annotations
@@ -36,15 +36,17 @@ def variant_index(path, kind, W=1920):
         return {}, 'MISSING'
     z = np.load(path, allow_pickle=True); f = z.files
     fi = z['frame_idx']; k2 = z['kp2d'].astype(np.float32)
-    if kind == 'delivered':
-        drawn = np.ones(len(fi), bool); hand = None
-    elif kind == 'fix':
-        drawn = z['drawn'].astype(bool) if 'drawn' in f else np.ones(len(fi), bool)
-        hand = z['hand'] if 'hand' in f else None
-    else:
-        drawn = z['kept'].astype(bool) if 'kept' in f else np.ones(len(fi), bool)
-        hand = z['hand'] if 'hand' in f else None
+    # Auto-detect how this file marks what should be drawn. The three pipelines disagree:
+    # the delivered npz draws every row, the post-process uses `drawn`, and hand21kp/MINT use
+    # `kept` plus a left/right `hand`. Guessing from the CLI flag got this wrong once.
+    hand = z['hand'] if 'hand' in f else None
+    if 'kept' in f:
+        drawn = z['kept'].astype(bool)
         if hand is not None: drawn = drawn & np.isin(hand, (0, 1))
+    elif 'drawn' in f:
+        drawn = z['drawn'].astype(bool)
+    else:
+        drawn = np.ones(len(fi), bool)
     idx = np.where(drawn)[0]
     if len(idx) == 0: return {}, 'no detections'
     fi2, k22 = fi[idx], k2[idx]
@@ -73,7 +75,9 @@ def main():
     ap.add_argument('--scale', type=float, default=0.5)
     ap.add_argument('--crf', type=int, default=28)
     ap.add_argument('--max-frames', type=int, default=0)
-    ap.add_argument('--c-title', default='C  candidate: rescue + smoothing')
+    ap.add_argument('--c-title', default='C  hand21kp + rescue + smoothing')
+    ap.add_argument('--mint', default=None, help='MINT keypoint npz, drawn as a third panel')
+    ap.add_argument('--mint-title', default='MINT (raw)')
     a = ap.parse_args()
 
     cap = cv2.VideoCapture(a.video)
@@ -84,11 +88,13 @@ def main():
     ow, oh = int(W * a.scale) // 2 * 2, int(H * a.scale) // 2 * 2
 
     # only render panels whose labels were actually supplied
-    panels = [('A  BASELINE (unchanged)', *variant_index(a.delivered, 'delivered', W))]
+    panels = [('A  DELIVERED (unchanged)', *variant_index(a.delivered, 'delivered', W))]
     if a.fix:
-        panels.append(('B  ALTERNATE', *variant_index(a.fix, 'fix', W)))
+        panels.append(('B  POST-PROCESS', *variant_index(a.fix, 'fix', W)))
     if a.hand21kp:
         panels.append((a.c_title, *variant_index(a.hand21kp, 'h21', W)))
+    if getattr(a, 'mint', None):
+        panels.append((a.mint_title, *variant_index(a.mint, 'h21', W)))
 
     tmp = a.out + '.tmp.mp4'
     NP = len(panels)
@@ -119,7 +125,7 @@ def main():
 
     r = subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', tmp, '-c:v', 'libx264',
                         '-crf', str(a.crf), '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
-                        '-movflags', '+faststart', a.out], capture_output=True)
+                        '-movflags', '+faststart', a.out], capture_output=True, stdin=subprocess.DEVNULL)
     if r.returncode == 0: os.remove(tmp)
     else: os.replace(tmp, a.out)
     print(f'{a.out}  {os.path.getsize(a.out)/1e6:.1f} MB  {ow*NP}x{oh}')
