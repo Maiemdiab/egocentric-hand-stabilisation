@@ -117,6 +117,13 @@ upstream 21-keypoint module). Add `--fix` for a third panel.
 `source` values used for weighting and gating: `fused`, `wilor`, `wilor_pnpfail`, `lifted_2d`.
 `hand`: `0` left, `1` right, `2` other/bystander, `-1` unlabelled.
 
+## Also here
+
+`mint_eval/` — deployment and inference scripts for evaluating
+[MINT](https://github.com/wuji-technology/wuji-ego-mint) as an alternative to per-frame detection,
+including the two footguns that cost the most time: host RAM scaling with input resolution rather
+than the model's, and CLI defaults that process only ~10 s of a 60 s clip.
+
 ## Requirements
 
 `numpy`, `scipy`, `opencv-python`, and `ffmpeg` on PATH.
