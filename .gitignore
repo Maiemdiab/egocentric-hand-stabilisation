@@ -5,3 +5,6 @@ __pycache__/
 *.csv
 *.env
 .DS_Store
+*.pkl
+*.zip
+assets/mano/
