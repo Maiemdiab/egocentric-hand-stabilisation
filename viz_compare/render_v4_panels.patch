@@ -1,0 +1,47 @@
+--- render_v4_panels.py	(the delivery renderer, unmodified)
++++ render_v4_panels.py	(with the two fixes below)
+@@ -150,6 +150,20 @@
+     kp3d = npz['kp3d_cam']; K = npz['K']
+     src = npz['source'] if 'source' in npz else None
+ 
++    # ===== PATCH A (F3): honour the post-process's `drawn` mask ==================================
++    # fix_labels.py picks ONE 2D source per track and flags the minority rows. Those rows stay in
++    # the label file but must not be drawn, otherwise the skeleton teleports ~0.46 palm widths every
++    # time the renderer swaps between MediaPipe pixels and WiLoR pixels inside one track.
++    PERSISTED_HAND = np.asarray(npz['hand']) if 'hand' in npz else None
++    if 'drawn' in npz:
++        dm = np.asarray(npz['drawn']).astype(bool)
++        n_hidden = int((~dm).sum())
++        fi, k2, kp3d = fi[dm], k2[dm], kp3d[dm]
++        if src is not None: src = src[dm]
++        if PERSISTED_HAND is not None: PERSISTED_HAND = PERSISTED_HAND[dm]
++        print(f"[fix] F3: withheld {n_hidden} minority-source detection(s) from the drawn skeleton")
++    # ============================================================================================
++
+     head = np.load(args.head); T = head['T'].astype(np.float64)
+     hfi = head['frame_idx'].astype(int) if 'frame_idx' in head else np.arange(len(T))
+     if not np.array_equal(hfi, np.arange(len(T))):
+@@ -205,6 +219,23 @@
+             tracks = keep
+     assign_handedness(tracks, W)
+ 
++    # ===== PATCH B (F2): freeze handedness per track ============================================
++    # The stock assign_handedness writes a PER-FRAME label (tr['hand_at']), so the L/R colour swaps
++    # mid-track whenever the two hands cross in x. A track is one physical hand, so its identity is
++    # decided once -- from the post-process's persisted vote when present, else the tracker's own
++    # majority -- and held for every frame of that track.
++    n_frozen = 0
++    for tr in tracks:
++        lab = tr['hand']
++        if PERSISTED_HAND is not None:
++            v = [int(PERSISTED_HAND[gi]) for gi in tr['idx'] if 0 <= int(PERSISTED_HAND[gi]) <= 1]
++            if v: lab = int(np.round(np.mean(v)))
++        n_frozen += sum(1 for f in tr['frames'] if tr['hand_at'].get(f, lab) != lab)
++        tr['hand'] = lab
++        tr['hand_at'] = {f: lab for f in tr['frames']}
++    print(f"[fix] F2: froze handedness per track; removed {n_frozen} mid-track L/R flip frame(s)")
++    # ============================================================================================
++
+     if args.imu:
+         up = imu_gravity_up(args.imu, T); print(f"[gravity] IMU up = {np.round(up,3)}")
+     else:

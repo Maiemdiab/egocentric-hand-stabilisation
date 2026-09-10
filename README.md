@@ -37,6 +37,13 @@ Measured against the rejected baseline over 116 clips: **jitter −63%**, **bone
 **0.014–0.021 vs the second model's 0.0142**, while retaining 85–94% of real motion where that model
 retains only 36–60% — it buys its stability by suppressing movement.
 
+## Comparing inside the delivery visualisation
+
+The review strip judges the labels; it does not tell you whether the artefact the customer sees is
+still shaky. [`viz_compare/`](viz_compare/) re-renders the delivered multi-panel visualisation
+(hands + 6-DoF head pose + wrist trajectories) with the new labels and stacks it against the
+original, changing nothing but the hand file.
+
 ## The defects, and how each was measured
 
 **1. Discarded detections that were never labelled.** If handedness is assigned *per track*, a
