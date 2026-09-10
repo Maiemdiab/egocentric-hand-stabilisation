@@ -58,17 +58,44 @@ def main():
                          '0.15 palm at 10 frames, 0.26 at 30, 0.36 at 60, 0.41 at 90. Bridged rows '
                          'sit BETWEEN two of our own confirmed detections of that same hand, so what '
                          'is uncertain is placement, not whether a hand is present.')
-    ap.add_argument('--min-conf', type=float, default=0.60,
-                    help='floor on MINT confidence for EVERY frame of the span')
-    ap.add_argument('--min-median-conf', type=float, default=0.80,
-                    help='required median MINT confidence across the span')
-    ap.add_argument('--max-anchor-disagree', type=float, default=1.5,
+    ap.add_argument('--min-conf', type=float, default=0.0,
+                    help='floor on MINT confidence for EVERY frame of the span. Off for the same '
+                         'measured reason as --min-median-conf, and because it fires exactly where '
+                         'it hurts: MINT dips toward its 0.5 floor around its OWN dropouts, so a '
+                         'per-frame floor vetoed precisely the partially-covered gaps that the '
+                         'hole-filling exists to recover.')
+    ap.add_argument('--min-median-conf', type=float, default=0.0,
+                    help='required median MINT confidence across the span. DEFAULT OFF, on measured '
+                         'grounds: once the anchor-agreement gate has run, MINT confidence carries '
+                         'essentially no information about bridge accuracy -- correlation with '
+                         'error is -0.064, against 0.407 for anchor disagreement, and gating at '
+                         '0.80 removed only 0.3%% of surviving gaps without moving median error '
+                         '(0.242 either way). It was rejecting real recoveries for nothing. The '
+                         'earlier calibration that motivated it measured whether MINT AGREES WITH '
+                         'US, which is a different question from whether the bridge lands.')
+    ap.add_argument('--max-mint-hole', type=int, default=20,
+                    help='MINT drops out inside gaps too, and demanding it on EVERY frame of the '
+                         'span rejected more frames than the gap cap did (48.8%% of our missing '
+                         'frames sit in gaps MINT covers only partly). Short dropouts are '
+                         'interpolated instead. Measured cost at gap 30: a 2-frame hole +0.1%%, '
+                         '5-frame +1.2%%, 10-frame +6.6%%, 15-frame +16.5%%, 20-frame +35.9%%. The cap '
+                         'sits at 20 because that is where filling stops beating the alternative: '
+                         'splitting the gap and extending one-sided measures 0.441, filling a '
+                         '20-frame hole measures 0.346, a 25-frame hole 0.434.')
+    ap.add_argument('--max-hole-frac', type=float, default=0.5,
+                    help='and no single MINT dropout may exceed this fraction of the gap. Without '
+                         'it, a hole spanning most of a short gap degenerates the reconstruction '
+                         'into plain linear interpolation while still looking like a MINT bridge.')
+    ap.add_argument('--max-anchor-disagree', type=float, default=2.5,
                     help='reject a gap when the our-minus-MINT offset at the two anchors differs by '
                          'more than this many palm widths. If MINT is on the same hand we are, its '
                          'bias drifts slowly and the two offsets agree; if it latched onto a '
                          'different hand mid-gap they diverge. Measured at gap 30 over 70 clips, '
                          'median error by disagreement band: <0.25 -> 0.132, 0.5-1.0 -> 0.359, '
-                         '2-4 -> 0.604, >4 -> 0.864 palm widths.')
+                         '2-4 -> 0.604, >4 -> 0.864 palm widths. The cap is deliberately loose '
+                         'because the alternative to a 0.6-palm bridge is no label at all; every '
+                         'bridged row carries its own `bridge_disagree` and `bridge_gap` so a '
+                         'stricter subset can be selected downstream without re-running anything.')
     a = ap.parse_args()
 
     z, fi, k2, k3, mask, hand = load_ours(a.ours)
@@ -87,9 +114,9 @@ def main():
         if h in (L, R): ours[h][int(fi[i])] = (k2[i], k3[i])
 
     K = np.asarray(z['K'], float); Kinv = np.linalg.inv(K)
-    new2d, new3d, newf, newh = [], [], [], []
+    new2d, new3d, newf, newh, newdis, newgap = [], [], [], [], [], []
     st = dict(gaps_seen=0, bridged=0, skip_no_mint=0, skip_too_long=0, skip_conf=0,
-              skip_anchor_disagree=0)
+              skip_anchor_disagree=0, skip_mint_hole=0, mint_holes_filled=0)
     band = {10: 0, 20: 0, 30: 0, 45: 0, 99: 0}
 
     for s in (L, R):
@@ -100,22 +127,44 @@ def main():
             st['gaps_seen'] += 1
             if g > a.max_gap: st['skip_too_long'] += 1; continue
             span = list(range(a0, b0 + 1))
-            if not all(t in M[s] for t in span): st['skip_no_mint'] += 1; continue
-            cs = np.array([CF[s][t] for t in range(a0 + 1, b0)])
+            # MINT must hold both anchors -- that is where the bias is measured and cancelled
+            if a0 not in M[s] or b0 not in M[s]: st['skip_no_mint'] += 1; continue
+            Ms, hole, bad = {}, [], False
+            for t in span:
+                if t in M[s]: Ms[t] = M[s][t]
+                else: hole.append(t)
+            if hole:
+                runs, cur = [], [hole[0]]
+                for x in hole[1:]:
+                    if x == cur[-1] + 1: cur.append(x)
+                    else: runs.append(cur); cur = [x]
+                runs.append(cur)
+                mx = max(len(r) for r in runs)
+                if mx > a.max_mint_hole or mx > a.max_hole_frac * g:
+                    st['skip_mint_hole'] += 1; continue
+                for r in runs:                       # interpolate MINT across its own short dropout
+                    f0, f1 = r[0] - 1, r[-1] + 1
+                    for t in r:
+                        w = (t - f0) / (f1 - f0)
+                        Ms[t] = (1 - w) * Ms[f0] + w * Ms[f1]
+                st['mint_holes_filled'] += len(hole)
+            cs = np.array([CF[s].get(t, 0.0) for t in range(a0 + 1, b0) if t in CF[s]])
+            if len(cs) == 0: st['skip_conf'] += 1; continue
             if cs.min() < a.min_conf or np.median(cs) < a.min_median_conf:
                 st['skip_conf'] += 1; continue
             oa, o3a = ours[s][a0]; ob, o3b = ours[s][b0]
             # does MINT hold the SAME hand we do, at both ends?
             pm = float(np.linalg.norm(oa[5] - oa[17])) or 60.0
-            dis = float(np.linalg.norm(np.median(oa - M[s][a0], 0) - np.median(ob - M[s][b0], 0))) / pm
+            dis = float(np.linalg.norm(np.median(oa - Ms[a0], 0) - np.median(ob - Ms[b0], 0))) / pm
             if dis > a.max_anchor_disagree: st['skip_anchor_disagree'] += 1; continue
             za = float(np.median(o3a[:, 2])); zb = float(np.median(o3b[:, 2]))
             for j in range(1, g + 1):
                 t = a0 + j; w = j / (g + 1)
-                fwd = oa + (M[s][t] - M[s][a0])       # carry our anchor forward on MINT's motion
-                bwd = ob + (M[s][t] - M[s][b0])       # and backward from the far anchor
+                fwd = oa + (Ms[t] - Ms[a0])           # carry our anchor forward on MINT's motion
+                bwd = ob + (Ms[t] - Ms[b0])           # and backward from the far anchor
                 uv = (1 - w) * fwd + w * bwd          # shared bias cancels at both ends
                 new2d.append(uv); newf.append(t); newh.append(s)
+                newdis.append(dis); newgap.append(g)
                 if np.isfinite(za) and np.isfinite(zb):
                     zt = (1 - w) * za + w * zb        # depth from OUR anchors; MINT's scale runs deep
                     d = (Kinv @ np.vstack([uv.T, np.ones(21)]))
@@ -152,6 +201,13 @@ def main():
                 fill = np.full((add,) + arr.shape[1:], -1, arr.dtype)
             out[key] = np.concatenate([arr, fill])
         out['bridged'] = np.concatenate([np.zeros(n_old, bool), np.ones(add, bool)])
+        # per-row quality, so the recall/precision trade stays the customer's to make
+        out['bridge_disagree'] = np.concatenate([np.full(n_old, np.nan, np.float32),
+                                                 np.array(newdis, np.float32)])
+        out['bridge_gap'] = np.concatenate([np.zeros(n_old, np.int32), np.array(newgap, np.int32)])
+        out['bridge_err_note'] = np.array(
+            'expected 2D error by bridge_disagree (palm widths, measured at gap 30): '
+            '<0.25 -> 0.13, 0.25-0.5 -> 0.22, 0.5-1 -> 0.36, 1-2 -> 0.51, 2-4 -> 0.60')
         order = np.argsort(out['frame_idx'], kind='stable')
         for k in list(out):
             arr = np.asarray(out[k])
