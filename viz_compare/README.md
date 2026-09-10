@@ -30,6 +30,35 @@ The letterbox bars the web conversion padded in — about a third of each panel'
 detected (by scanning for pure-black rows over several frames, so it adapts rather than assuming a
 fixed geometry) and cropped from both sides identically.
 
+## The head pose is the bigger half of the shake
+
+Measured, not assumed. The panels draw the wrist in the WORLD frame, so
+`world_p = R_head @ cam_p + t_head` — head-pose noise lands in the trajectory even when the hand
+keypoints are perfect. Freezing the hand in the camera frame and moving only the head reproduces
+nearly all of the observed vibration:
+
+| clip | world shake | head-only | hand-only | head's share |
+|---|---|---|---|---|
+| episode_045 | 4.55 mm | 2.91 | 2.72 | 40% |
+| episode_0011 | 5.51 mm | 4.57 | 1.76 | **68%** |
+| episode_008 | 8.00 mm | 6.36 | 2.52 | **68%** |
+
+Across 27 clips the median head share is **0.80**. Wrist jitter measures 1.65–2.66 mm in the camera
+frame and 4.55–8.00 mm in the world frame; the gap is the head trajectory. Every hand-side fix in
+this repo was working on the smaller half of the problem.
+
+[`../smooth_head_pose.py`](../smooth_head_pose.py) cuts world-frame wrist shake 28–43% at `win=4`
+while retaining 83–89% of real head motion:
+
+| clip | raw | win=4 | head motion kept |
+|---|---|---|---|
+| episode_045 | 4.55 mm | 3.28 mm (−28%) | 83% |
+| episode_0011 | 5.51 mm | 3.16 mm (−43%) | 86% |
+| episode_008 | 8.00 mm | 5.42 mm (−32%) | 89% |
+
+`render_A_vs_cplus_smoothhead.sh` renders the delivered panel above the fixed one so both changes can
+be judged together.
+
 ## Files
 
 | file | role |
@@ -37,6 +66,7 @@ fixed geometry) and cropped from both sides identically.
 | `build_viz_compare.sh` | the driver: convert -> render -> web-convert -> stack. Resumable, sharded. |
 | `h21_to_enhanced.py` | maps the new labels onto the delivery renderer's `_enhanced_keypoints` schema. A field rename; nothing is recomputed. |
 | `viz_pair.py` | stacks two rendered panels, time-locked, with letterbox cropping. |
+| `render_A_vs_cplus_smoothhead.sh` | delivered panel on top, new hands + smoothed head below. Sharded with `SHARD=k/n`. |
 | `render_v4_panels.patch` | two fixes to the delivery renderer (see below). The renderer itself is not included here. |
 
 ### `render_v4_panels.patch`
