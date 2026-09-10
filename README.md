@@ -1,6 +1,6 @@
 # Egocentric hand-tracking stabilisation
 
-Three post-processing passes for **21-keypoint hand tracking on head-mounted (egocentric) video**,
+Four post-processing passes for **21-keypoint hand tracking on head-mounted (egocentric) video**,
 plus a review renderer. They operate on the *output* of an existing detection pipeline — no GPU, no
 re-detection — and each targets a defect measured rather than assumed.
 
@@ -8,7 +8,36 @@ Written against a pipeline that fuses **MediaPipe Hands** (2D) with **WiLoR/MANO
 inputs are generic: per-detection 2D keypoints, 3D keypoints, frame indices, a per-detection source
 tag, and track/handedness labels.
 
-## The three defects
+> **[METHOD.md](METHOD.md) is the decision log** — every parameter here was chosen from a
+> measurement, and that document gives the measurement beside the choice, including the several
+> "obvious" improvements that were tried and made results *worse*.
+
+## The pipeline (C+)
+
+Four passes over an existing detector's output. CPU only, no re-detection, no GPU.
+
+```
+detector output
+  1. rescue_handedness.py   recover detections found but never given a left/right label
+  2. temporal_smooth.py     zero-phase smoothing (the estimator has no memory between frames)
+  3. mint_bridge2.py        fill gaps with a second model's MOTION, anchored on our own detections
+  4. rigidify.py            exact bone rigidity + articulation smoothed in POSE space
+  -> abc_strip.py           time-locked review strip: baseline | C+ | second model
+```
+
+Run the whole thing with `build_cplus.sh` (all paths are environment variables):
+
+```bash
+OURS_DIR=out/ours MINT_DIR=out/mint VIDEO_DIR=out/video \
+BASE_DIR=out/baseline OUT_DIR=out/cplus ./build_cplus.sh
+```
+
+Measured against the rejected baseline over 116 clips: **jitter −63%**, **bone-length CV 15.0% →
+0.000%**, teleport magnitude −62%, left/right flips eliminated. Articulation jitter reaches
+**0.014–0.021 vs the second model's 0.0142**, while retaining 85–94% of real motion where that model
+retains only 36–60% — it buys its stability by suppressing movement.
+
+## The defects, and how each was measured
 
 **1. Discarded detections that were never labelled.** If handedness is assigned *per track*, a
 detection landing in no surviving track never gets a left/right label and is dropped — even though
