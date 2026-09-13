@@ -471,3 +471,27 @@ what happened, the rows stay empty rather than being invented.
 | `eval_self_bridge.py` | held-out harness; attempts 1 and 2, kept as the negative result |
 | `eval_self_bridge2.py` | held-out harness for the Hermite β sweep, incl. the β=0≡lerp check |
 | `build_self16.sh` | parallel work-stealing build + render for the zero-long-bridge clips |
+
+### 9.6 Fleet result — 16 clips built with no MINT at all
+
+Built locally, 8 work-stealing workers on 14 cores, 16/16 with no failures. Published to
+`labelling_results/hand_pose_mint/_A_vs_MINT_vs_SELF/` as `A DELIVERED | C+ (MINT) | SELF (no MINT)`.
+
+| | C+ with MINT | no MINT |
+|---|---|---|
+| rows, 16 clips | 42,510 | 42,372 (**−0.41%**) |
+| articulation jitter, median | 0.0100 | **0.0100** |
+| non-bridged rows, worst-clip median difference | — | **0.000–0.001 px** (one outlier at 0.44) |
+| bridged rows, median difference | — | **0.023 palm widths** (worst clip 0.089) |
+
+The stability is not merely preserved, it is *identical* — dropping MINT changed the median
+articulation jitter by zero. Rows lost are 174 of 42,510, all in gaps the disagreement gate refused
+rather than invented. Two clips came out slightly *better*
+(`Others_hospitality_remove_bar_mats_206` 0.0418 → 0.0388, `home_arranging_glassware_79` 0.0111 →
+0.0103), because a refused gap is a cleaner track break than a wrong fill.
+
+One trap worth recording: the finals were first written beside the sweep's intermediates as
+`${CLIP}_SELF.npz` next to `${CLIP}_self.npz`. **macOS is case-insensitive**, so those are the same
+file — the finals silently overwrote the intermediates while `ls` kept the earlier casing, and a
+case-sensitive Python glob for `*_SELF.npz` then matched exactly one of sixteen. Content was never
+wrong, but the comparison it fed was. Finals now go in their own directory.

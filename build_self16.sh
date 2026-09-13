@@ -18,7 +18,11 @@ B=s3://stage-humyn-egocentric-stereo-data
 D=$B/labelling_results/hand_pose_mint/_A_vs_MINT_vs_SELF
 W=${W:-0}
 MAXGAP=${MAXGAP:-15}; BETA=${BETA:-0.5}; H=${H:-16}; ORDER=${ORDER:-3}
-mkdir -p "$OUT/npz" "$OUT/done" "$OUT/claim" "$OUT/log"
+# Final outputs go in their own directory, NOT alongside the sweep's intermediate `_self.npz`.
+# macOS is case-INSENSITIVE: `${CLIP}_SELF.npz` and `${CLIP}_self.npz` are the same file there, so
+# sharing a directory silently overwrites one with the other and `ls` keeps whichever case was
+# created first -- which then breaks any case-sensitive glob looking for the finals.
+mkdir -p "$OUT/final" "$OUT/done" "$OUT/claim" "$OUT/log"
 
 N=0; F=0
 # fd 3: ffmpeg inside the renderer reads stdin and would otherwise eat the work list
@@ -39,8 +43,8 @@ while IFS=$'\t' read -r CLIP IND NPZKEY <&3; do
   $PY fix/rigidify.py --npz $T/sb.npz --out $T/self_final.npz --h $H --order $ORDER \
       > $T/rigid.json 2>>"$LOG" \
       || { echo "[w$W] RIGID-FAIL $CLIP"; F=$((F+1)); rm -rf $T; continue; }
-  cp $T/self_final.npz "$OUT/npz/${CLIP}_SELF.npz"
-  cp $T/self.json "$OUT/npz/${CLIP}_self.json"; cp $T/rigid.json "$OUT/npz/${CLIP}_rigid.json"
+  cp $T/self_final.npz "$OUT/final/${CLIP}_SELF.npz"
+  cp $T/self.json "$OUT/final/${CLIP}_self.json"; cp $T/rigid.json "$OUT/final/${CLIP}_rigid.json"
 
   aws s3 cp "$B/$NPZKEY" $T/a.npz --quiet 2>>"$LOG" || { echo "[w$W] NO-A $CLIP"; F=$((F+1)); rm -rf $T; continue; }
   aws s3 cp "$B/$IND/left_eye.mp4" $T/v.mp4 --quiet 2>>"$LOG" || { echo "[w$W] NO-VIDEO $CLIP"; F=$((F+1)); rm -rf $T; continue; }
@@ -56,7 +60,7 @@ while IFS=$'\t' read -r CLIP IND NPZKEY <&3; do
 
   if [ -s "$OUT/${CLIP}_A_vs_MINT_vs_SELF.mp4" ]; then
     aws s3 cp "$OUT/${CLIP}_A_vs_MINT_vs_SELF.mp4" "$D/${CLIP}_A_vs_MINT_vs_SELF.mp4" --quiet 2>>"$LOG" \
-      && aws s3 cp "$OUT/npz/${CLIP}_SELF.npz" "$D/npz/${CLIP}_SELF.npz" --quiet 2>>"$LOG" \
+      && aws s3 cp "$OUT/final/${CLIP}_SELF.npz" "$D/npz/${CLIP}_SELF.npz" --quiet 2>>"$LOG" \
       && { touch "$OUT/done/${CLIP}.ok"; N=$((N+1))
            echo "[w$W] OK $CLIP  $($PY -c "import json;s=json.load(open('$T/self.json'));r=json.load(open('$T/rigid.json'));print(f\"filled={s['bridged']} skip_dis={s['skip_disagree']} tracks={r['tracks']} jit {r['jitter_artic_before']:.4f}->{r['jitter_artic_after']:.4f}\")" 2>/dev/null)"; }
   fi
