@@ -377,3 +377,97 @@ motion where MINT retains 36–60%.
 - **The visual adjudications behind the precision numbers are small samples** (100 rows for source
   classes, 8 per gap band) taken from the three worst clips, so per-class rates are pessimistic
   fleet-wide.
+
+---
+
+## 9. Dropping MINT where it earns nothing (`self_bridge.py`)
+
+### 9.1 The observation that started it
+
+A reviewer watching `_A_vs_Cplus_smoothhead` rejected `Others_towel_making_87` for a hand that
+floats free of the arm, and accepted `Hospitality_pouring_pink_yogurt_into_bowls_73` — guessing that
+the difference was how much of each clip came from MINT. The bridge statistics confirm it exactly:
+
+| clip | bridged rows | in gaps >20 frames | longest run |
+|---|---|---|---|
+| `Others_towel_making_87` | 869 / 3547 (24.5%) | 390 (11.0%) | 66 frames |
+| `Hospitality_pouring_pink_yogurt_into_bowls_73` | 11 / 3644 (0.3%) | 0 | ≤10 frames |
+
+The rejected frame is `bridged=True` and is the *only* row drawn in it — the detector saw nothing
+there, so everything visible was MINT-carried. Long bridges do not jitter; they **slide**, because
+past roughly 20 frames the anchors stop constraining MINT's slow bias.
+
+Across the 106-clip set the median clip is 14.2% bridged / 5.6% long-bridged, and 16 clips have
+**zero** long bridges. So "is this clip safe" is answerable from the bridge json alone, without
+watching anything.
+
+### 9.2 Two failed designs, recorded because they were plausible
+
+The MINT bridge was originally justified against **linear interpolation of 21 independent
+keypoints** — the weakest possible own-data opponent. Giving it a fair one took three attempts.
+
+**Attempt 1 — blend two damped extrapolations.** Same structure as `mint_bridge2` but carrying our
+own local velocity instead of MINT's deltas. Scored **0.273** at gap 10 against lerp's 0.273: no
+gain at all. Blending two one-sided extrapolations does not cancel their error, it averages it in.
+
+**Attempt 2 — carry the hand shape across by Procrustes rotation.** Split each hand into a wrist
+trajectory and a wrist-centred shape, rotate/scale anchor A's shape onto anchor B's. Scored
+**0.363** — materially *worse than doing nothing clever*. Hand articulation is not a rigid rotation
+of the point set, so this drags fingers along arcs they never travelled.
+
+**Attempt 3 — per-keypoint cubic Hermite.** The unique cubic hitting both anchor positions *and*
+both anchor velocities. Tangents are blended between the chord slope and the measured velocity,
+`T = (1-β)·chord + β·V`, so **β=0 reproduces linear interpolation exactly**.
+
+That last property is not cosmetic — it is the test. A first cut used *zero tangents* and claimed
+they degenerated to lerp. Zero tangents give **smoothstep**, not lerp, and the self-test caught it
+at 9.5 px on a 7-frame gap. After re-parameterising, β=0 matches lerp to 3e-5 px, and the `hb0.0`
+column below is identical to the `lerp` column at every gap — a permanent built-in check.
+
+### 9.3 Held-out result (178 clips, median palm widths)
+
+| gap | lerp | **MINT** | hb0.0 | hb0.25 | **hb0.5** | hb0.75 | hb1.0 |
+|---|---|---|---|---|---|---|---|
+| 2 | 0.072 | **0.054** | 0.072 | 0.065 | 0.063 | 0.068 | 0.078 |
+| 5 | 0.159 | **0.104** | 0.159 | 0.147 | 0.140 | 0.143 | 0.155 |
+| 10 | 0.273 | **0.153** | 0.273 | 0.253 | 0.244 | 0.247 | 0.261 |
+| 15 | 0.364 | **0.183** | 0.364 | 0.341 | 0.331 | 0.336 | 0.355 |
+| 30 | 0.576 | **0.246** | 0.576 | 0.554 | 0.552 | 0.577 | 0.621 |
+
+β=0.5 is the best own-data estimator; β=1.0 is worse at every gap, because the local velocity
+estimate is noisy and full-strength tangents overshoot.
+
+**MINT still wins per frame — by 1.3× at gap 2, widening to 2.2× at gap 30.** It carries real
+information we do not have. That is stated plainly because it decides where this may be used.
+
+### 9.4 Why it is still worth having
+
+Clip-level damage is **per-frame error × rows filled**, and the second factor varies by two orders
+of magnitude. On `home_chopping_onion_87` — one gap, 7 frames, 7 rows of 3646:
+
+| | C+ with MINT | no MINT |
+|---|---|---|
+| rows | 3646 | 3646 |
+| tracks | 2 | 2 |
+| articulation jitter | 0.0057 | 0.0057 |
+| global jitter | 0.0072 | 0.0072 |
+
+The two outputs are identical on 3639 rows (median 0.000 px, p99 0.014 px) and differ only on the 7
+bridged rows, by 8.6 px median = **0.062 palm widths**. MINT — a 1.139B-parameter model and a GPU
+box — was being run for that.
+
+Fleet-wide, a no-MINT fill capped at 15 frames recovers **72.6% of MINT's short-gap rows but only
+36.4% overall**; the missing 20,186 rows are all long bridges, which are the ones that slide. The
+anchor-disagreement gate rejects 8.9% of gaps outright — where neither side's velocity predicts
+what happened, the rows stay empty rather than being invented.
+
+**Use it where the bridge json shows no long gaps. It is not a drop-in replacement at gap 120.**
+
+### 9.5 Files
+
+| file | role |
+|---|---|
+| `self_bridge.py` | own-motion gap fill, no external model. `--max-gap 15 --beta 0.5` |
+| `eval_self_bridge.py` | held-out harness; attempts 1 and 2, kept as the negative result |
+| `eval_self_bridge2.py` | held-out harness for the Hermite β sweep, incl. the β=0≡lerp check |
+| `build_self16.sh` | parallel work-stealing build + render for the zero-long-bridge clips |
